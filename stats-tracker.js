@@ -24,6 +24,7 @@
   const processedThisSession = new Set();
 
   const wordToNumber = {
+    a: 1, an: 1,
     one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
     seven: 7, eight: 8, nine: 9, ten: 10
   };
@@ -325,7 +326,7 @@
 
       const src = line + ' ';
       const foodSource = 'food';
-      const pairRe = /(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(hit\s*points?|health|endurance|strength(?:\s+points?)?|defence(?:\s+points?)?|defense(?:\s+points?)?|levels?\(?s?\)?|movement(?:\s+points?)?|agility|speed)/gi;
+      const pairRe = /(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\s+(hit\s*points?|health|endurance|strength(?:\s+points?)?|defence(?:\s+points?)?|defense(?:\s+points?)?|levels?\(?s?\)?|movement(?:\s+points?)?|agility|speed)/gi;
       let pm;
       let found = false;
       const bits = [];
@@ -379,7 +380,7 @@
       return;
     }
 
-    const pairRe = /(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(hit\s*points?|health|endurance|strength|defence|defense|levels?|movement(?:\s+points?)?)/gi;
+    const pairRe = /(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\s+(hit\s*points?|health|endurance|strength|defence|defense|levels?|movement(?:\s+points?)?)/gi;
     const bits = [];
     let pm;
     while ((pm = pairRe.exec(text)) !== null) {
@@ -416,6 +417,15 @@
     }
 
     const lower = bodyText.toLowerCase();
+
+    // Catch "loses a level" / "gains a level" style REs that use "a" instead of a number
+    const levelA = lower.match(new RegExp(PET_NAME + "['’]?s?\\s+(loses?|gains?)\\s+a\\s+level", 'i'));
+    if (levelA && !processedThisSession.has('re-level-a|' + levelA[0].toLowerCase())) {
+      processedThisSession.add('re-level-a|' + levelA[0].toLowerCase());
+      const lose = /lose/i.test(levelA[1]);
+      addStat('level', lose ? -1 : 1, 're');
+      addToLog((lose ? '-1' : '+1') + ' Level');
+    }
 
     // ========== Fixed Faerie Quest rewards ==========
     // ONLY on the Faerie Quests page (quests.phtml).
