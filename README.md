@@ -4,6 +4,11 @@ A Chrome extension for Neopets (also works in Edge, Brave, and Opera).
 
 ## Changelog
 
+### 1.6.2
+- Random Events: the Tracker now writes a short, consistent line for each event (from the JellyNeo Random Events guide). Examples: `RE: +1,234 NP`, `RE: −350 NP (ghost)`, `RE: Red Codestone`, `RE: shop +1 size`, `RE: +1 level (Flotsam)`. Flavour-only events (and the half-finished "You received follow" bug) are not logged.
+- Food Club — Darthy Bets only: uses the Plus 1.8.71 picker (plain ladder, a 30% chance-to-profit floor falling back to 20%, and a 119:1 odds cap). Darthy No Bust, Mimic - nsheng, Mimic - jkScrollingDown, and Mimic - Garret Jaxx are unchanged. The up-to-10 bet table is unchanged.
+- Training Helper: the Item Grabber button is back. When it opens the Safety Deposit Box for course stones, it searches `codestone` so every stone shows at once, then leaves the page for you to withdraw by hand (it does not auto-withdraw).
+
 ### 1.6.1
 - Food Club: five betting styles you can pick (the choice is remembered):
   - Darthy No Bust: 0–5% bust chance
@@ -77,6 +82,7 @@ neopets-darthy-prime/
     ├── stamp-helper.js
     ├── shop-profit.js
     ├── shop-mimic.js
+    ├── re-catalog.js
     ├── random-events.js
     ├── home-pets-grid.js
     ├── shopwiz-pro.js

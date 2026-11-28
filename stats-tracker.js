@@ -66,8 +66,9 @@
   }
 
   function stripLogPrefix(s) {
+    // 1.6.2: leave a leading "RE:" in place so Tracker lines stay "RE: +1,234 NP" etc.
     return String(s || '')
-      .replace(/^(KQ Prize|KQ|Kitchen|lab|Lab Ray|Lab|RE|Wheel|You get 1 Faerie Quest)\s*[:\u2014\-]+\s*/i, '')
+      .replace(/^(KQ Prize|KQ|Kitchen|lab|Lab Ray|Lab|Wheel|You get 1 Faerie Quest)\s*[:\u2014\-]+\s*/i, '')
       .trim();
   }
 

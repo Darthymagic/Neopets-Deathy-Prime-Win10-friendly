@@ -18,6 +18,7 @@
   const LOCAL_ACTIVE = 'neoActiveTrainings';
   const LOCAL_COMPLETED = 'neoCompletedTrainings';
   const LOCAL_PENDING_WITHDRAW = 'neoPendingSDBWithdraw';
+  const LOCAL_CODESTONE_SEARCH = 'darthy_sdb_codestone_search';
   const LOCAL_PAY_URL = 'neoAutoPayUrl';
   const LOCAL_SEEN_ALERTS = 'neoSeenNativeAlerts';
 
@@ -867,7 +868,8 @@
   }
 
   function addItemGrabberButton() {
-    return; // Plus: Training Auto withdraws stones itself
+    // 1.6.2 (t170u): show the button in non-plus. It opens the SDB on a "codestone"
+    // search so every stone is listed for a manual grab (no auto-withdraw).
     document.querySelectorAll('td[width="250"]').forEach(td => {
       if (!/not been paid for yet/i.test(td.textContent || '') && !td.querySelector('input[value="Pay"]')) return;
       if (td.querySelector('.item-grabber-btn')) return;
@@ -895,9 +897,10 @@
         localStorage.setItem(LOCAL_PAY_URL, JSON.stringify(payMeta));
         localStorage.setItem(LOCAL_PENDING_WITHDRAW, JSON.stringify(requiredItems));
         localStorage.setItem(LOCAL_PENDING_WITHDRAW + 'At', String(Date.now()));
-        btn.textContent = 'Grabbing...';
+        localStorage.setItem(LOCAL_CODESTONE_SEARCH, '1');
+        btn.textContent = 'Opening SDB...';
         btn.disabled = true;
-        setTimeout(() => window.location.href = '/safetydeposit.phtml', 300);
+        setTimeout(() => window.location.href = '/safetydeposit.phtml?obj_name=codestone', 300);
       };
 
       btnContainer.appendChild(btn);
@@ -937,7 +940,8 @@
     localStorage.setItem(LOCAL_PAY_URL, JSON.stringify(payMeta));
     localStorage.setItem(LOCAL_PENDING_WITHDRAW, JSON.stringify(items && items.length ? items : []));
     localStorage.setItem(LOCAL_PENDING_WITHDRAW + 'At', String(Date.now()));
-    setTimeout(() => { window.location.href = '/safetydeposit.phtml'; }, 250);
+    localStorage.setItem(LOCAL_CODESTONE_SEARCH, '1');
+    setTimeout(() => { window.location.href = '/safetydeposit.phtml?obj_name=codestone'; }, 250);
     return true;
   }
   window.darthyClickItemGrabber = launchGrabberForPet;
@@ -981,49 +985,31 @@
   }
   function handleAutoSDBWithdraw() {
     if (!location.pathname.includes('safetydeposit.phtml')) return;
-    // 1.8.45: withdraw only for a Training job or an Item Grabber click from the last 15 minutes —
-    // a leftover list no longer makes the SDB act when you open it yourself.
+    // Only act for an Item Grabber / training-stone visit from the last 15 minutes,
+    // or an explicit 1.6.2 "search codestone" flag. Opening the SDB yourself is left alone.
     {
       const at = parseInt(localStorage.getItem(LOCAL_PENDING_WITHDRAW + 'At') || '0', 10) || 0;
-      if (!trainHandedOff() && !(at && Date.now() - at < 15 * 60 * 1000)) return;
+      const flagged = localStorage.getItem(LOCAL_CODESTONE_SEARCH) === '1' || localStorage.getItem(LOCAL_CODESTONE_SEARCH) === 'done';
+      if (!trainHandedOff() && !flagged && !(at && Date.now() - at < 15 * 60 * 1000)) return;
     }
     try { if (window.DarthyPrimeSdbAH && window.DarthyPrimeSdbAH.isRunning && window.DarthyPrimeSdbAH.isRunning()) return; } catch (_) {}
     if (window.__darthySdbBusy) return;
-    let pending = [];
-    try { pending = JSON.parse(localStorage.getItem(LOCAL_PENDING_WITHDRAW) || '[]') || []; } catch (_) { pending = []; }
-    if (!pending.length) return;
+
+    // 1.6.2 (t170u): never auto-withdraw. Search "codestone" so all stones show, then leave
+    // the page for the guild person to grab what they need by hand.
     window.__darthySdbBusy = true;
 
-    const statusDiv = document.createElement('div');
-    statusDiv.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#2c5aa0;color:white;padding:12px 24px;border-radius:8px;z-index:999999;font-size:15px;';
-    document.body.appendChild(statusDiv);
-
-    const req = pending[0] || {};
-    const want = stoneNameOnly(req.name) || String(req.name || '').replace(/\s+/g, ' ').trim();
-    const needQty = Math.max(1, parseInt(req.qty, 10) || 1);
-    statusDiv.textContent = 'SDB ' + pending.length + ' left — search ' + want;
-
-    function savePending(list) {
-      pending = list;
-      localStorage.setItem(LOCAL_PENDING_WITHDRAW, JSON.stringify(list));
-    }
-
-    function exactRow() {
-      if (!want) return null;
-      const rows = document.querySelectorAll('.sdb-table tbody tr, table.sdb-table tr, .sdb-item-row');
-      for (const row of rows) {
-        const nameEl = row.querySelector('.sdb-item-name, .sdb-col-name');
-        const have = (nameEl ? nameEl.textContent : '').replace(/\s+/g, ' ').trim();
-        if (have && have.toLowerCase() === want.toLowerCase()) return row;
+    function banner(msg) {
+      let statusDiv = document.getElementById('darthy-sdb-codestone-banner');
+      if (!statusDiv) {
+        statusDiv = document.createElement('div');
+        statusDiv.id = 'darthy-sdb-codestone-banner';
+        statusDiv.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#2c5aa0;color:white;padding:12px 24px;border-radius:8px;z-index:999999;font-size:15px;';
+        document.body.appendChild(statusDiv);
       }
-      return null;
+      statusDiv.textContent = msg;
     }
 
-    function sdbEmpty() {
-      const empty = document.querySelector('.sdb-empty');
-      const t = ((empty && empty.textContent) || document.body.innerText || '');
-      return /couldn.?t find any items matching|could not find any items matching|no items matching/i.test(t);
-    }
     function setVueValue(el, value) {
       if (!el) return;
       const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
@@ -1032,136 +1018,87 @@
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    function confirmReady() {
-      const btn = document.querySelector('.sdb-drawer .sdb-drawer-confirm-btn, .sdb-drawer-confirm-btn');
-      if (!btn || btn.disabled || btn.classList.contains('np-button-disabled')) return null;
-      return btn;
-    }
-    function ensureEntireSdb() {
-      const btn = Array.from(document.querySelectorAll('.sdb-scope-toggle [role="radio"], .sdb-scope-toggle button'))
-        .find(b => /entire sdb/i.test(b.textContent || '') || /whole safety deposit/i.test(b.title || ''));
-      if (!btn) return;
-      if (btn.getAttribute('aria-checked') === 'true' || btn.classList.contains('is-active')) return;
-      try { btn.click(); } catch (_) {}
+
+    function simClick(el) {
+      if (!el) return;
+      const opts = { bubbles: true, cancelable: true, view: window };
+      try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (_) {}
+      try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (_) {}
+      try { el.dispatchEvent(new MouseEvent('click', opts)); } catch (_) { try { el.click(); } catch (__) {} }
     }
 
-    function finishReturn() {
+    function currentQuery() {
+      try { return (new URLSearchParams(location.search).get('obj_name') || '').trim(); } catch (_) { return ''; }
+    }
+
+    function searchBox() {
+      return document.querySelector('.sdb-search-input, input[name="obj_name"]');
+    }
+    function searchBtn() {
+      return document.querySelector('.sdb-search-btn, input[type="submit"][value="Find"], form[action*="safetydeposit"] input[type="submit"], form[action*="safetydeposit"] button[type="submit"]');
+    }
+
+    function markDone() {
+      localStorage.setItem(LOCAL_CODESTONE_SEARCH, 'done');
       localStorage.removeItem(LOCAL_PENDING_WITHDRAW);
-      statusDiv.textContent = 'Done! Returning...';
-      let returnUrl = '/island/training.phtml?type=status';
-      let pet = localStorage.getItem('darthy_train_sdb_pet') || '';
-      try {
-        const meta = JSON.parse(localStorage.getItem(LOCAL_PAY_URL) || 'null');
-        if (meta && meta.statusUrl) returnUrl = meta.statusUrl;
-        if (meta && meta.pet) pet = meta.pet;
-      } catch (_) {}
-      if (pet) localStorage.setItem('darthy_train_sdb_done', pet);
-      setTimeout(() => { window.location.href = returnUrl; }, 1400);
     }
 
-    function nextOrDone() {
-      if (pending.length) {
-        statusDiv.textContent = 'Next stone (' + pending.length + ' left)';
-        setTimeout(() => { window.location.href = '/safetydeposit.phtml'; }, 1600);
-      } else {
-        finishReturn();
-      }
+    function stayMessage() {
+      banner('All codestones — grab what you need, then go back and Pay.');
+      markDone();
     }
 
-    function withdrawRow(row) {
-      const input = row.querySelector('.np-stepper-input, input[type="number"], input.sdb-qty');
-      const max = parseInt(input && (input.max || input.getAttribute('max')), 10) || needQty;
-      const qty = Math.min(needQty, max);
-      if (input) {
-        input.value = String(qty);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-      const checkbox = row.querySelector('.sdb-item-checkbox, input[type="checkbox"]');
-      if (checkbox && !checkbox.checked) {
-        try { checkbox.click(); } catch (_) {
-          checkbox.checked = true;
-          checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }
-      setTimeout(() => {
-        const actionSelect = document.querySelector('.sdb-drawer select.sdb-action-select, .sdb-drawer select.sdb-as-native');
-        if (actionSelect) setVueValue(actionSelect, 'inventory');
-        setTimeout(() => {
-          const firstConfirm = confirmReady();
-          if (firstConfirm) firstConfirm.click();
-          setTimeout(() => {
-            const popupConfirm = document.querySelector('#sdb__popup .popup-footer__2020 button.np-button.button-green__2020, #sdb__popup button.button-green__2020');
-            if (popupConfirm) popupConfirm.click();
-            savePending(pending.slice(1));
-            setTimeout(nextOrDone, 1800);
-          }, 1100);
-        }, 800);
-      }, 600);
+    // Already searched this visit: just keep the banner, never withdraw.
+    if (localStorage.getItem(LOCAL_CODESTONE_SEARCH) === 'done') {
+      stayMessage();
+      return;
     }
 
-    function waitForSearchUi(tries) {
-      const box = document.querySelector('.sdb-search-input');
-      const btn = document.querySelector('.sdb-search-btn');
-      if (box || tries > 20) return Promise.resolve({ box, btn });
-      return new Promise(r => setTimeout(() => r(waitForSearchUi(tries + 1)), 400));
+    // Prefer a normal page load of the SDB search URL so every stone is listed.
+    if (currentQuery().toLowerCase() !== 'codestone') {
+      banner('Opening all codestones…');
+      localStorage.setItem(LOCAL_CODESTONE_SEARCH, '1');
+      const next = location.pathname + '?obj_name=codestone';
+      setTimeout(() => { window.location.href = next; }, 400 + Math.floor(Math.random() * 301));
+      return;
     }
 
-    function searchThenGrab() {
-      if (!want) {
-        savePending(pending.slice(1));
-        setTimeout(nextOrDone, 800);
+    // On the search URL already. If the new SDB UI has its own box, fill "codestone" and
+    // submit once (the query string is sometimes ignored by that UI). Cap the wait at 8s.
+    const deadline = Date.now() + 8000;
+    function tick() {
+      if (localStorage.getItem(LOCAL_CODESTONE_SEARCH) === 'done') { stayMessage(); return; }
+      if (Date.now() > deadline) {
+        stayMessage();
         return;
       }
-      waitForSearchUi(0).then(({ box, btn }) => {
-        if (!box) {
-          statusDiv.textContent = 'SDB search box missing — retry';
-          setTimeout(() => { window.location.href = '/safetydeposit.phtml'; }, 1600);
-          return;
-        }
-        ensureEntireSdb();
-        box.focus();
-        setVueValue(box, '');
-        setVueValue(box, want);
-        let clicked = false;
-        if (btn) { try { btn.click(); clicked = true; } catch (_) {} }
-        if (!clicked) {
-          try { box.form && box.form.requestSubmit ? box.form.requestSubmit() : box.form && box.form.submit(); } catch (_) {}
-          box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-        }
-        statusDiv.textContent = 'Searching ' + want;
-        let n = 0;
-        const iv = setInterval(() => {
-          n++;
-          if (n < 4) return;
-          const row = exactRow();
-          if (row) {
-            clearInterval(iv);
-            statusDiv.textContent = 'Withdrawing ' + want + ' x' + needQty;
-            withdrawRow(row);
-            return;
+      const box = searchBox();
+      const btn = searchBtn();
+      if (box && String(box.value || '').trim().toLowerCase() === 'codestone') {
+        stayMessage();
+        return;
+      }
+      if (box) {
+        const pause = 400 + Math.floor(Math.random() * 301);
+        setTimeout(() => {
+          setVueValue(box, 'codestone');
+          if (btn) simClick(btn);
+          else if (box.form) {
+            try { box.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); } catch (_) {}
           }
-          if (n >= 6 && sdbEmpty()) {
-            clearInterval(iv);
-            statusDiv.textContent = want + ' not in SDB — will retry after pay';
-            let missed = [];
-            try { missed = JSON.parse(localStorage.getItem('darthy_train_sdb_missed') || '[]') || []; } catch (_) {}
-            missed.push({ name: want, qty: needQty });
-            localStorage.setItem('darthy_train_sdb_missed', JSON.stringify(missed));
-            savePending(pending.slice(1));
-            setTimeout(nextOrDone, 1400);
-            return;
-          }
-          if (n > 36) {
-            clearInterval(iv);
-            statusDiv.textContent = want + ' search slow — retry same stone';
-            setTimeout(() => { window.location.href = '/safetydeposit.phtml'; }, 1400);
-          }
-        }, 450);
-      });
+          stayMessage();
+        }, pause);
+        return;
+      }
+      // No search box (classic SDB already filtered by the URL): stay put.
+      if (/codestone/i.test(document.body ? document.body.innerText : '')) {
+        stayMessage();
+        return;
+      }
+      setTimeout(tick, 150);
     }
-
-    setTimeout(searchThenGrab, 1200);
+    banner('Searching “codestone”…');
+    tick();
   }
 
   // ========== Notification System ==========

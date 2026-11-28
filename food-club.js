@@ -1,11 +1,12 @@
 /**
- * Food Club module for Darthy Prime (non-Plus) — 1.6.1
+ * Food Club module for Darthy Prime (non-Plus) — 1.6.2
  *  - Place a Bet tab: a NeoFoodClub-style table of up to 10 bets for the chosen style, with the Amount
  *    filled in, Odds / Payoff / Prob. / E.R. / N.E. / Maxbet / arena pirates and a "Place bet!" button
  *    per row (one bet per click, sent in the background; new-tab fallback), plus a Total row.
- *  - Five styles (remembered): Darthy No Bust 0–5% bust, Darthy Bets 45–55% (calibrated max TER, as Plus),
- *    Mimic - nsheng 25–30%, Mimic - jkScrollingDown 35–42%, Mimic - Garret Jaxx (dynamic: ~30% when the
- *    round looks good, otherwise 0–5%). A style can use fewer than 10 bets when that suits the round.
+ *  - Five styles (remembered): Darthy No Bust 0–5% bust, Darthy Bets (Plus 1.8.71: plain ladder, 30%/20%
+ *    chance-to-profit floors, 119:1 odds cap), Mimic - nsheng 25–30%, Mimic - jkScrollingDown 35–42%,
+ *    Mimic - Garret Jaxx (dynamic: ~30% when the round looks good, otherwise 0–5%). A style can use
+ *    fewer than 10 bets when that suits the round (not Darthy Bets, which still places 10).
  *  - Current Bets tab: Copy Bets (NeoFoodClub-style text, as Plus).
  *  - FC Wrap Up (Weekly / Monthly / Quarterly, kept forever) and Collect All winnings tracking (as Plus).
  * Nothing runs by itself: no bet is placed and nothing is collected unless you click.
@@ -34,7 +35,7 @@
   const GARRET_GOOD_ER = 1.85;
   const STYLES = {
     nobust: { name: 'Darthy No Bust', band: [0.00, 0.05], desc: '0–5% bust · bust-proof when possible (Garret-style safe)' },
-    darthy: { name: 'Darthy Bets', band: [0.45, 0.55], desc: '45–55% bust · calibrated max TER (the Plus style)' },
+    darthy: { name: 'Darthy Bets', band: [0.45, 0.55], desc: 'plain ladder · 30% (then 20%) chance to profit · odds ≤119:1 (the Plus 1.8.71 style)' },
     nsheng: { name: 'Mimic - nsheng', band: [0.25, 0.30], desc: '25–30% bust' },
     jk: { name: 'Mimic - jkScrollingDown', band: [0.35, 0.42], desc: '35–42% bust' },
     garret: { name: 'Mimic - Garret Jaxx', band: null, desc: 'Dynamic · ~30% bust when the odds look good, otherwise 0–5%' }
@@ -143,6 +144,245 @@
       const t = v.reduce((x, y) => x + y, 0);
       return t > 0 ? v.map(x => x / t) : a.slice();
     });
+  }
+
+
+  // 1.6.2 (t169u): Darthy Bets only — the Plus 1.8.71 picker. The other four styles still use pickSet.
+  // 1.8.66 / 1.8.71: no bet's total odds above FC_ODDS_CAP (119); the 10-bet set must give at least the
+  // first reachable chance to profit (units won > bets placed). Floor starts at 30%, else 20%, else the
+  // highest chance available. Plain ladder: at least 1 low rung (<= 12:1), 2 mid (13–40:1) and 1 top
+  // (41–119:1), and no more than 5 bets bunched on one rung. FC_TRAIL stays off.
+  const FC_ODDS_CAP = 119;
+  const FC_PROFIT_TIERS = [0.30, 0.20];
+  const FC_LADDER = { lowMax: 12, midMax: 40, need: [1, 2, 1], maxPerRung: 5 };
+  const FC_TRAIL_TUNED = { w: 3, gap: 3 };
+  const FC_TRAIL = null;
+  function ladderRung(O) { return O <= FC_LADDER.lowMax ? 0 : (O <= FC_LADDER.midMax ? 1 : 2); }
+  function ladderMiss(lines) {
+    const c = [0, 0, 0];
+    lines.forEach(l => { c[ladderRung(l.O)]++; });
+    let m = 0;
+    for (let i = 0; i < 3; i++) m += Math.max(0, FC_LADDER.need[i] - c[i]) + Math.max(0, c[i] - FC_LADDER.maxPerRung);
+    return m;
+  }
+  // leftover soft preference inside upsideLines after the profit floor is met (same as Plus 1.8.71)
+  const UPSIDE_BUST_LO = 0.45, UPSIDE_BUST_HI = 0.55, UPSIDE_W = 0, UPSIDE_PEN = 200;
+
+function topLines(probs, odds, maxBet, n = 10) {
+    const rows = [];
+    for (let a = 0; a < 5; a++)
+      for (let b = 0; b < 5; b++)
+        for (let c = 0; c < 5; c++)
+          for (let d = 0; d < 5; d++)
+            for (let e = 0; e < 5; e++) {
+              if (!a && !b && !c && !d && !e) continue;
+              const picks = [a, b, c, d, e];
+              let P = 1, O = 1;
+              for (let k = 0; k < 5; k++) {
+                if (picks[k]) {
+                  P *= probs[k][picks[k] - 1];
+                  O *= odds[k][picks[k] - 1];
+                }
+              }
+              if (!(O > 0) || !isFinite(P)) continue;
+              if (O > FC_ODDS_CAP) continue;   // 1.8.66: no long shots
+              // Cap at the 1M win limit. If the line only needs 2000 NP to hit that cap, stake is 2000.
+              const maxStake = Math.max(1, Math.ceil(MAX_WIN / O));
+              const stake = Math.min(maxBet, maxStake);
+              const ER = P * O;
+              const NE = stake * (ER - 1);
+              // Hybrid score: mostly TER/ER, with a NE tilt so high-stake lines still matter
+              const score = (ER * 1000) + (NE / 10000);
+              rows.push({ picks, P, O, ER, stake, NE, score });
+            }
+    // Closer to max TER: rank by hybrid score (ER-weighted), then pure ER, then NE
+    rows.sort((x, y) => y.score - x.score || y.ER - x.ER || y.NE - x.NE);
+    return rows.slice(0, n);
+  }
+
+function upsideLines(probs, odds, maxBet, n, budgetMs, opt) {
+    n = n || 10; opt = opt || {};
+    const floor = Number(opt.floor) || 0, profitMode = opt.mode === 'profit', ladder = !!opt.ladder;
+    const trail = opt.trail || null;   // 1.8.68: { w, gap } — double / triple close behind profit
+    const t0 = Date.now(), budget = budgetMs || 1200;
+    const op = new Float64Array(1024);
+    for (let o = 0; o < 1024; o++) {
+      let p = 1;
+      for (let k = 0; k < 5; k++) p *= probs[k][(o >> (2 * k)) & 3];
+      op[o] = p;
+    }
+    // every possible bet (3,124), with the outcomes it wins on
+    const all = [];
+    for (let code = 1; code < 3125; code++) {
+      const picks = [0, 0, 0, 0, 0];
+      let c = code;
+      for (let k = 0; k < 5; k++) { picks[k] = c % 5; c = Math.floor(c / 5); }
+      let P = 1, O = 1;
+      for (let k = 0; k < 5; k++) if (picks[k]) { P *= probs[k][picks[k] - 1]; O *= odds[k][picks[k] - 1]; }
+      if (!(O > 0) || !(P > 0)) continue;
+      if (O > FC_ODDS_CAP) continue;   // 1.8.66
+      const maxStake = Math.max(1, Math.ceil(MAX_WIN / O));
+      const stake = Math.min(maxBet, maxStake);
+      const ER = P * O;
+      all.push({ picks, P, O, ER, stake, NE: stake * (ER - 1), score: ER, rung: ladderRung(O) });
+    }
+    all.sort((x, y) => y.ER - x.ER || y.O - x.O);
+    const cands = all.slice(0, 400);
+    // 1.8.66: plus the likeliest bets that pay more than the whole set on their own (odds > n), so the
+    // search can reach the profit floor on high-odds days
+    const profitable = all.filter(b => b.O > n).sort((x, y) => y.P - x.P || y.ER - x.ER);
+    profitable.slice(0, 150).forEach(b => { if (!cands.includes(b)) cands.push(b); });
+    if (ladder) {   // 1.8.68: make sure every rung has enough candidates (the best ER bets on each rung)
+      for (let r = 0; r < 3; r++) all.filter(b => b.rung === r).slice(0, 60).forEach(b => { if (!cands.includes(b)) cands.push(b); });
+    }
+    cands.forEach(b => {
+      const cov = [];
+      for (let o = 0; o < 1024; o++) {
+        let ok = true;
+        for (let k = 0; k < 5; k++) if (b.picks[k] && b.picks[k] - 1 !== ((o >> (2 * k)) & 3)) { ok = false; break; }
+        if (ok) cov.push(o);
+      }
+      b.cov = Int16Array.from(cov);
+    });
+    const units = new Float64Array(1024);
+    const add = (b, s) => { const c = b.cov; for (let i = 0; i < c.length; i++) units[c[i]] += s * b.O; };
+    const stats = () => {
+      let bust = 0, pr = 0, d = 0, t = 0, q = 0;
+      for (let o = 0; o < 1024; o++) {
+        const u = units[o], p = op[o];
+        if (u === 0) bust += p;
+        else if (u > n) { pr += p; if (u >= 2 * n) { d += p; if (u >= 3 * n) { t += p; if (u >= 4 * n) q += p; } } }
+      }
+      return { bust, pr, d, t, q };
+    };
+    const rc = [0, 0, 0];   // 1.8.68: bets per ladder rung in the set being improved
+    const miss = () => { let m = 0; for (let i = 0; i < 3; i++) m += Math.max(0, FC_LADDER.need[i] - rc[i]) + Math.max(0, rc[i] - FC_LADDER.maxPerRung); return m; };
+    const scoreOf = (ter, s) => {
+      if (profitMode) return s.pr * 1000 + ter * 0.01;
+      // 1.8.66: below the floor is always worse than any set at/above it (and climbs toward it)
+      if (floor > 0 && s.pr < floor - 1e-12) return -1e6 + s.pr * 1e4 + (ladder ? -miss() * 10 : 0) + ter * 0.01;
+      // 1.8.68: at/above the floor, a set off the ladder is worse than any ladder set (and climbs toward one)
+      if (ladder) { const m = miss(); if (m > 0) return -5e5 - m * 1e3 + s.pr * 10 + ter * 0.01; }
+      const off = s.bust < UPSIDE_BUST_LO ? UPSIDE_BUST_LO - s.bust : (s.bust > UPSIDE_BUST_HI ? s.bust - UPSIDE_BUST_HI : 0);
+      const tr = trail ? trail.w * (s.d + s.t) - trail.gap * (Math.max(0, s.pr - s.d) + Math.max(0, s.pr - s.t)) : 0;
+      return ter + UPSIDE_W * (s.d + s.t + s.q) - UPSIDE_PEN * off + tr;
+    };
+    function improve(set) {
+      units.fill(0);
+      rc.fill(0);
+      set.forEach(b => { add(b, 1); rc[b.rung]++; });
+      let ter = set.reduce((x, b) => x + b.ER, 0);
+      let cur = scoreOf(ter, stats());
+      let changed = true;
+      while (changed && Date.now() - t0 < budget) {
+        changed = false;
+        for (let i = 0; i < set.length; i++) {
+          const out = set[i];
+          add(out, -1); rc[out.rung]--;
+          const baseTer = ter - out.ER;
+          let best = null, bestS = cur;
+          for (const c of cands) {
+            if (set.includes(c)) continue;
+            add(c, 1); rc[c.rung]++;
+            const s = scoreOf(baseTer + c.ER, stats());
+            add(c, -1); rc[c.rung]--;
+            if (s > bestS + 1e-9) { bestS = s; best = c; }
+          }
+          if (best) { set[i] = best; add(best, 1); rc[best.rung]++; ter = baseTer + best.ER; cur = bestS; changed = true; }
+          else { add(out, 1); rc[out.rung]++; }
+          if (Date.now() - t0 >= budget) break;
+        }
+      }
+      return { set, score: cur };
+    }
+    // starting sets
+    const starts = [];
+    starts.push(cands.slice(0, n));
+    const std = topLines(probs, odds, maxBet, n).map(l => cands.find(c => c.picks.join() === l.picks.join())).filter(Boolean);
+    if (std.length === n) starts.push(std);
+    const anchors = [];
+    for (let k = 0; k < 5; k++) for (let s = 1; s <= 4; s++) if (probs[k][s - 1] >= 0.3) anchors.push([k, s, probs[k][s - 1]]);
+    anchors.sort((x, y) => y[2] - x[2]);
+    anchors.slice(0, 6).forEach(([k, s]) => {
+      const set = cands.filter(c => c.picks[k] === s).slice(0, n);
+      if (set.length === n) starts.push(set);
+    });
+    if (floor > 0 || profitMode) {   // 1.8.66: a start made of the likeliest bets that profit on their own
+      const ps = profitable.slice(0, n);
+      if (ps.length === n) starts.push(ps);
+    }
+    const seeds = (opt.seeds || []).concat(opt.seed ? [opt.seed] : []);   // 1.8.68: several known sets allowed
+    seeds.forEach(seed => {   // 1.8.66: a known set (the best chance-to-profit set) as a start
+      if (!seed || seed.length !== n) return;
+      const sd = seed.map(l => cands.find(c => c.picks.join() === l.picks.join()) || all.find(c => c.picks.join() === l.picks.join())).filter(Boolean);
+      sd.forEach(b => { if (!cands.includes(b)) cands.push(b); });
+      if (sd.length === n && !b0dup(sd)) starts.unshift(sd);
+    });
+    if (ladder) {   // 1.8.68: a ladder start — best ER bets rung by rung (2 low, 4 mid, 4 top), sharing the likeliest pirate if possible
+      const lad = [];
+      const take = (r, k) => cands.filter(c => c.rung === r && !lad.includes(c)).slice(0, k).forEach(c => lad.push(c));
+      take(0, 2); take(1, 4); take(2, 4);
+      if (lad.length < n) cands.filter(c => !lad.includes(c)).slice(0, n - lad.length).forEach(c => lad.push(c));
+      if (lad.length === n) starts.push(lad);
+    }
+    function b0dup(a) { return new Set(a).size !== a.length; }
+    let best = null;
+    for (const st of starts) {
+      if (Date.now() - t0 >= budget && best) break;
+      const r = improve(st.slice());
+      if (!best || r.score > best.score) best = { set: r.set.slice(), score: r.score };
+    }
+    return best.set.map(b => ({ picks: b.picks.slice(), P: b.P, O: b.O, ER: b.ER, stake: b.stake, NE: b.NE, score: b.score }));
+  }
+
+function tierStats(lines, probs, n) {
+    const units = new Float64Array(1024);
+    let bust = 0, pr = 0, d = 0, t = 0, q = 0;
+    for (let o = 0; o < 1024; o++) {
+      let p = 1, u = 0;
+      for (let k = 0; k < 5; k++) p *= probs[k][(o >> (2 * k)) & 3];
+      for (const b of lines) {
+        let ok = true;
+        for (let k = 0; k < 5; k++) if (b.picks[k] && b.picks[k] - 1 !== ((o >> (2 * k)) & 3)) { ok = false; break; }
+        if (ok) u += b.O;
+      }
+      units[o] = u;
+      if (u === 0) bust += p;
+      if (u > n) pr += p;   // 1.8.66: chance to profit (units won > bets placed)
+      if (u >= 2 * n) d += p;
+      if (u >= 3 * n) t += p;
+      if (u >= 4 * n) q += p;
+    }
+    return { bust, pr, d, t, q };
+  }
+
+function pickBets(probs, odds, maxBet, n, budgetMs, tune) {
+    n = n || 10;
+    const trail = (tune && tune.trail !== undefined) ? tune.trail : FC_TRAIL;   // tests / tuning may pass their own (null = off)
+    // first: the highest chance to profit any capped set reaches today (also the safe start for each tier)
+    const best = upsideLines(probs, odds, maxBet, n, budgetMs, { mode: 'profit' });
+    if (!best || best.length !== n) return null;
+    const bestSt = tierStats(best, probs, n);
+    for (let i = 0; i < FC_PROFIT_TIERS.length; i++) {
+      const floor = FC_PROFIT_TIERS[i];
+      if (bestSt.pr < floor - 1e-9) continue;   // not reachable today → next tier down
+      const lines = upsideLines(probs, odds, maxBet, n, budgetMs, { floor, seed: best, trail });
+      if (!lines || lines.length !== n) continue;
+      const st = tierStats(lines, probs, n);
+      if (st.pr >= floor - 1e-9) {
+        const why = Math.round(floor * 100) + '%+ to profit';
+        // 1.8.68 (t128u): keep the ladder inside this tier — the plain pick if it already is one, else a ladder
+        // search from it; if no ladder reaches this tier today, the plain pick stays (tier first)
+        if (!ladderMiss(lines)) return { lines, st, floor, tier: i + 1, max: bestSt.pr, why, ladder: true };
+        const lad = upsideLines(probs, odds, maxBet, n, budgetMs, { floor, ladder: true, seeds: [best, lines], trail });
+        if (lad && lad.length === n && !ladderMiss(lad)) {
+          const ls = tierStats(lad, probs, n);
+          if (ls.pr >= floor - 1e-9) return { lines: lad, st: ls, floor, tier: i + 1, max: bestSt.pr, why: why + ', ladder', ladder: true };
+        }
+        return { lines, st, floor, tier: i + 1, max: bestSt.pr, why: why + ' (no ladder reaches it today)', ladder: false };
+      }
+    }
+    return { lines: best, st: bestSt, floor: 0, tier: 0, max: bestSt.pr, ladder: !ladderMiss(best), why: 'best chance to profit (under ' + Math.round(FC_PROFIT_TIERS[FC_PROFIT_TIERS.length - 1] * 100) + '%)' };
   }
 
   // ======================= the bet picker (all five styles) =======================
@@ -293,9 +533,13 @@
     const n = Math.max(1, Math.min(10, maxBets || 10));
     const op = outcomeProbs(probs);
     if (style === 'darthy') {
-      // the Plus 1.8.42 picker: top-400 E.R. candidates, 45–55% band, penalty 200
+      // 1.6.2: Plus 1.8.71 picker (plain ladder, 30%/20% profit floors, 119:1 cap). Not pickSet.
+      const pick = pickBets(probs, odds, maxBet, n, budgetMs);
+      if (pick && pick.lines && pick.lines.length) {
+        return { lines: pick.lines, band: null, mode: 'odds ≤' + FC_ODDS_CAP + ':1, ' + pick.why, pick };
+      }
       const pre0 = { op, cands: betCandidates(probs, odds, maxBet, false).cands };
-      return { lines: pickSet(probs, odds, maxBet, STYLES.darthy.band, n, budgetMs, pre0, BAND_PEN), band: STYLES.darthy.band, mode: '' };
+      return { lines: pickSet(probs, odds, maxBet, STYLES.darthy.band, n, budgetMs, pre0, BAND_PEN), band: STYLES.darthy.band, mode: 'fallback 45–55% bust' };
     }
     const pre = { op, cands: betCandidates(probs, odds, maxBet, true).cands };
     if (style === 'garret') {
@@ -1567,10 +1811,10 @@
   }
 
   window.DarthyPrimeFC = {
-    styleLines, setStats, pickSet, nfcOriginal, calibrate, readBetAnswer, betParams, betEndpoint, newTabUrl,
+    styleLines, setStats, pickSet, pickBets, ladderMiss, ladderRung, nfcOriginal, calibrate, readBetAnswer, betParams, betEndpoint, newTabUrl,
     betsText: (nfc) => buildBetsText(gatherBets(nfc || null), nfc || null),
     wrapUpText, history: () => histLoad(), updateHistory: (force) => histMaintain(!!force),
-    STYLES, GARRET_GOOD_ER
+    STYLES, GARRET_GOOD_ER, FC_ODDS_CAP, FC_PROFIT_TIERS, FC_LADDER
   };
 
   async function init() {
